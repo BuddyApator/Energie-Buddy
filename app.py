@@ -1,63 +1,47 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import plotly.express as px
-import sqlite3
 from datetime import datetime
 import requests
 from zeroconf import Zeroconf, ServiceBrowser
 import time
 
-# --- 1. DATENBANK-LOGIK (MIT NUTZER-TRENNUNG) ---
-def init_db():
-    conn = sqlite3.connect("energy_history.db", check_same_thread=False)
-    c = conn.cursor()
-    # Wir fügen die Spalte 'username' hinzu, um Daten zu trennen
-    c.execute('''CREATE TABLE IF NOT EXISTS energy (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 username TEXT,
-                 date TEXT, 
-                 reading REAL)''')
-    conn.commit()
-    return conn
+# --- SEITEN-KONFIGURATION ---
+st.set_page_config(page_title="Energie-Buddy Cloud", page_icon="⚡", layout="centered")
 
-def save_reading(username, date, reading):
-    conn = sqlite3.connect("energy_history.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO energy (username, date, reading) VALUES (?, ?, ?)", (username, date, reading))
-    conn.commit()
-    conn.close()
+# --- VERBINDUNG ZU GOOGLE SHEETS ---
+# Erfordert 'st-gsheets-connection' in der requirements.txt
+# Und die URL in den Streamlit Secrets (Settings -> Secrets)
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error("Verbindung zu Google Sheets fehlgeschlagen. Prüfe deine Secrets!")
+    st.stop()
 
-# --- 2. LOGIN SYSTEM ---
-def check_password():
-    """Gibt True zurück, wenn der Benutzer korrekt eingeloggt ist."""
-    def login_form():
-        with st.form("Login"):
-            st.subheader("🔒 Energie-Buddy Login")
-            user = st.text_input("Benutzername")
-            pw = st.text_input("Passwort", type="password")
-            submit = st.form_submit_button("Anmelden")
-            
-            if submit:
-                # Hier kannst du Kunden-Logins festlegen
-                credentials = {
-                    "admin": "buddy2024",
-                    "kunde1": "sonne123",
-                    "gast": "start123"
-                }
-                
-                if user in credentials and credentials[user] == pw:
-                    st.session_state["authenticated"] = True
-                    st.session_state["username"] = user
-                    st.rerun()
-                else:
-                    st.error("❌ Nutzername oder Passwort falsch")
+# --- HELFER-FUNKTIONEN ---
+def get_users():
+    return conn.read(worksheet="users", ttl="1s")
 
-    if "authenticated" not in st.session_state:
-        login_form()
+def get_energy_data():
+    return conn.read(worksheet="daten", ttl="1s")
+
+def register_user(email, password, name):
+    users = get_users()
+    if not users.empty and email in users['email'].values:
         return False
+    new_user = pd.DataFrame([{"email": email, "password": password, "name": name}])
+    updated_users = pd.concat([users, new_user], ignore_index=True)
+    conn.update(worksheet="users", data=updated_users)
     return True
 
-# --- 3. OPTKOPPLER SUCHE (WIE GEHABT) ---
+def save_reading(username, date, reading):
+    data = get_energy_data()
+    new_entry = pd.DataFrame([{"username": username, "date": date, "reading": reading}])
+    updated_data = pd.concat([data, new_entry], ignore_index=True)
+    conn.update(worksheet="daten", data=updated_data)
+
+# --- OPTKOPPLER SCAN (Nur für lokalen Gebrauch) ---
 class TasmotaDiscovery:
     def __init__(self):
         self.found_ip = None
@@ -69,78 +53,19 @@ class TasmotaDiscovery:
 def discover_tasmota_device():
     zeroconf = Zeroconf()
     listener = TasmotaDiscovery()
-    browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+    ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
     time.sleep(2)
     zeroconf.close()
-    if listener.found_ip:
-        return f"http://{listener.found_ip}/cm?cmnd=Status%208"
-    return None
+    return f"http://{listener.found_ip}/cm?cmnd=Status%208" if listener.found_ip else None
 
-# --- HAUPTPROGRAMM ---
-st.set_page_config(page_title="Energie-Buddy Pro", page_icon="⚡")
+# --- AUTHENTIFIZIERUNG / LOGIN-BEREICH ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-if check_password():
-    # Alles unter dieser Zeile wird erst nach dem Login angezeigt
-    user = st.session_state["username"]
-    
-    st.sidebar.title(f"Hallo, {user.capitalize()}! 👋")
-    if st.sidebar.button("Abmelden"):
-        del st.session_state["authenticated"]
-        st.rerun()
+if not st.session_state.authenticated:
+    st.title("⚡ Willkommen beim Energie-Buddy")
+    tab1, tab2 = st.tabs(["Anmelden", "Konto erstellen"])
 
-    st.title("⚡ Dein Energie-Buddy")
-    init_db()
-
-    # Auswahl des Modus
-    mode = st.sidebar.radio("Modus:", ["Dashboard & Grafik", "Daten eingeben"])
-
-    if mode == "Daten eingeben":
-        st.header("📝 Neuen Zählerstand erfassen")
-        
-        tab1, tab2 = st.tabs(["✍️ Manuell", "📡 Automatisch (Optokoppler)"])
-        
-        with tab1:
-            with st.form("manual_entry"):
-                val = st.number_input("Aktueller Stand (kWh)", step=0.1)
-                dt = st.date_input("Datum", datetime.now())
-                if st.form_submit_button("Speichern"):
-                    save_reading(user, dt.strftime("%Y-%m-%d"), val)
-                    st.success("Daten gespeichert!")
-
-        with tab2:
-            device_url = discover_tasmota_device()
-            if device_url:
-                st.success(f"Sensor gefunden: {device_url}")
-                if st.button("Jetzt live abrufen"):
-                    try:
-                        res = requests.get(device_url, timeout=5).json()
-                        stand = res['StatusSNS']['SML']['Total_in']
-                        save_reading(user, datetime.now().strftime("%Y-%m-%d %H:%M"), stand)
-                        st.balloons()
-                        st.metric("Live-Stand", f"{stand} kWh")
-                    except:
-                        st.error("Fehler beim Abruf der Tasmota-Daten.")
-            else:
-                st.info("Kein lokaler Sensor gefunden. (Im Cloud-Modus normal)")
-
-    else:
-        st.header(f"📊 Auswertung für {user.capitalize()}")
-        
-        # WICHTIG: Wir laden nur die Daten des aktuellen Nutzers!
-        conn = sqlite3.connect("energy_history.db")
-        query = "SELECT date, reading FROM energy WHERE username = ? ORDER BY date ASC"
-        df = pd.read_sql_query(query, conn, params=(user,))
-        conn.close()
-
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-            
-            # Grafik
-            fig = px.area(df, x='date', y='reading', title="Dein Energieverbrauch")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Tabelle
-            st.subheader("Deine letzten Messungen")
-            st.table(df.tail(5))
-        else:
-            st.warning("Noch keine Daten vorhanden. Bitte wechsle zu 'Daten eingeben'.")
+    with tab2:
+        st.subheader("Neu hier? Registrieren")
+        new_name = st.text_input("Dein Vor

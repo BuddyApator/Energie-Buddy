@@ -123,4 +123,50 @@ if not st.session_state.authenticated:
                 st.warning("Bitte alle Felder ausfüllen.")
 
     with t1:
-        st.subheader("Willkommen zurück
+        st.subheader("Willkommen zurück")
+        l_email = st.text_input("E-Mail", key="log_e")
+        l_pw = st.text_input("Passwort", type="password", key="log_p")
+        if st.button("Anmelden"):
+            users = get_data_as_df("users")
+            if not users.empty:
+                match = users[(users['email'] == l_email) & (users['password'].astype(str) == str(l_pw))]
+                if not match.empty:
+                    st.session_state.authenticated = True
+                    st.session_state.username = l_email
+                    st.session_state.display_name = match.iloc[0]['name']
+                    st.rerun()
+                else:
+                    st.error("Login-Daten nicht korrekt.")
+            else:
+                st.error("Keine Benutzerdaten gefunden.")
+
+# --- 6. HAUPT-APP ---
+else:
+    st.sidebar.title(f"Hallo {st.session_state.display_name}!")
+    menu = st.sidebar.radio("Navigation", ["Dashboard", "Zählerstand"])
+    
+    if st.sidebar.button("Abmelden"):
+        st.session_state.authenticated = False
+        st.rerun()
+
+    if menu == "Zählerstand":
+        st.header("Zählerstand erfassen")
+        val = st.number_input("Aktueller Stand (kWh)", step=0.1)
+        if st.button("💾 Speichern"):
+            if save_reading(st.session_state.username, datetime.now().date(), val):
+                st.success("Erfolgreich gespeichert!")
+                st.balloons()
+    else:
+        st.header("📊 Deine Verbrauchsdaten")
+        df = get_data_as_df("daten")
+        if not df.empty:
+            user_df = df[df["username"] == st.session_state.username].copy()
+            if not user_df.empty:
+                user_df['date'] = pd.to_datetime(user_df['date'])
+                user_df = user_df.sort_values("date")
+                fig = px.line(user_df, x="date", y="reading", markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Noch keine Einträge vorhanden.")
+        else:
+            st.info("Keine Daten in der Tabelle gefunden.")

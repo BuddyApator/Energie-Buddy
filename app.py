@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="Energie-Buddy Cloud", page_icon="⚡", layout="centered")
 
 # --- BITTE HIER DEINEN LINK EINTRAGEN ---
-SPREADSHEET_URL = "DEIN_KOMPLETTER_GOOGLE_SHEETS_LINK_HIER"
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1ZIaXlNSm4Yn27bRpbS3hSZVmUI14KgFboL7g8VHDG40/edit?gid=0#gid=0"
 
 # --- 2. VERBINDUNG ZU GOOGLE (DIAGNOSE-MODUS) ---
 @st.cache_resource
